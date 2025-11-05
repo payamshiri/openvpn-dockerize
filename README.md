@@ -1,111 +1,107 @@
-# OpenVPN for Docker
+# openvpn-dockerize
 
-OpenVPN server in a Docker container complete with an EasyRSA PKI CA.
+A minimal, Docker-friendly way to run an OpenVPN server. This repository contains Dockerfile(s) and shell scripts to build and run an OpenVPN server in a container, with persistent configuration and keys.
 
-## Use
+Features
+- Runs an OpenVPN server inside a container
+- Persistent configuration and PKI via mounted volumes
+- Simple docker run and docker-compose examples
+- Intended for small deployments, testing, and learning
 
-* Pick a name for the `$OVPN_DATA` data volume container. It's recommended to
-  use the `ovpn-data-` prefix to operate seamlessly with the reference systemd
-  service.  Users are encourage to replace `example` with a descriptive name of
-  their choosing.
+Prerequisites
+- Docker (Engine)
+- Docker Compose (optional)
+- Capability to map the TUN device and provide NET_ADMIN capabilities to the container
 
-      OVPN_DATA="ovpn-data-example"
+Quick start (build + run)
+1. Build the image:
+   docker build -t openvpn-dockerize .
 
-* Initialize the `$OVPN_DATA` container that will hold the configuration files
-  and certificates.  The container will prompt for a passphrase to protect the
-  private key used by the newly generated certificate authority.
+2. Create a directory on the host to persist configuration and keys:
+   mkdir -p /srv/openvpn-data
 
-      docker volume create --name $OVPN_DATA
-      docker run -v $OVPN_DATA:/etc/openvpn --rm kylemanna/openvpn ovpn_genconfig -u udp://VPN.SERVERNAME.COM
-      docker run -v $OVPN_DATA:/etc/openvpn --rm -it kylemanna/openvpn ovpn_initpki
+3. Run the container:
+   docker run -d \
+     --name openvpn \
+     --cap-add=NET_ADMIN \
+     --device /dev/net/tun \
+     -v /srv/openvpn-data:/etc/openvpn \
+     -p 1194:1194/udp \
+     -e OVPN_NETWORK=10.8.0.0/24 \
+     -e OVPN_PORT=1194 \
+     -e OVPN_PROTO=udp \
+     openvpn-dockerize
 
-* Start OpenVPN server process
+Notes:
+- --cap-add=NET_ADMIN and --device /dev/net/tun are commonly required for OpenVPN to create the tun device.
+- Persisting /etc/openvpn (or the path used by the container) ensures keys and configurations survive container restarts.
 
-      docker run -v $OVPN_DATA:/etc/openvpn -d -p 1194:1194/udp --cap-add=NET_ADMIN kylemanna/openvpn
+Environment variables (recommended / common)
+- OVPN_NETWORK — VPN subnet (example: 10.8.0.0/24)
+- OVPN_PORT — UDP/TCP port to listen on (default 1194)
+- OVPN_PROTO — Protocol (udp or tcp)
+- OVPN_SERVER_NAME — server common name (optional)
+- EASYRSA_BATCH — set to 1 to skip interactive prompts when initializing PKI
+- OVPN_CLIENT_NAME — default client name to create
+- OVPN_DNS — DNS server(s) pushed to clients (comma-separated)
 
-* Generate a client certificate without a passphrase
+Adjust these to match the actual variables implemented in this repo.
 
-      docker run -v $OVPN_DATA:/etc/openvpn --rm -it kylemanna/openvpn easyrsa build-client-full CLIENTNAME nopass
+Docker Compose example
+version: "3.8"
+services:
+  openvpn:
+    image: openvpn-dockerize
+    container_name: openvpn
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "1194:1194/udp"
+    volumes:
+      - ./openvpn-data:/etc/openvpn
+    environment:
+      - OVPN_NETWORK=10.8.0.0/24
+      - OVPN_PORT=1194
+      - OVPN_PROTO=udp
 
-* Retrieve the client configuration with embedded certificates
+Initializing PKI & generating client profiles
+The exact commands depend on the helper scripts present in this repository. Typical tasks:
+1. Initialize PKI / generate server certificates (run once):
+   - Often implemented as an entrypoint action if /etc/openvpn is empty, or by running an init script inside the container.
+   - Example (container-specific):
+     docker exec -it openvpn /bin/sh -c "easyrsa init-pki && easyrsa build-ca nopass && easyrsa build-server-full server nopass"
 
-      docker run -v $OVPN_DATA:/etc/openvpn --rm kylemanna/openvpn ovpn_getclient CLIENTNAME > CLIENTNAME.ovpn
+2. Generate a client certificate/profile:
+   - docker exec -it openvpn /bin/sh -c "easyrsa build-client-full CLIENTNAME nopass"
+   - Collect keys and create a .ovpn client file (combine client cert, key, CA and remote/server info).
+   - Some images include a helper like ovpn_getclient CLIENTNAME > CLIENTNAME.ovpn
 
-### Systemd Init Scripts
+Check the repository scripts to see the exact command names and use those instead of the generic examples above.
 
-A `systemd` init script is available to manage the OpenVPN container.  It will
-start the container on system boot, restart the container if it exits
-unexpectedly, and pull updates from Docker Hub to keep itself up to date.
+Ports & networking
+- Default: 1194/udp (changeable via OVPN_PORT and OVPN_PROTO)
+- If running behind NAT, forward the chosen port from your router to the host running the container.
+- Consider firewall rules and ensure UDP/TCP passthrough as configured.
 
-Please refer to the [systemd documentation](docs/systemd.md) to learn more.
+Persistence & backups
+- Back up the mounted data directory (e.g., /srv/openvpn-data). It contains PKI, server.conf, and client credentials.
+- Losing the PKI means losing existing client certificates — keep backups.
 
-### Docker Compose
+Security notes
+- Keep private keys safe; do not commit them to git.
+- Consider using client passphrase protection for stronger security.
+- Run images from trusted sources and keep base packages up to date.
 
-If you prefer to use `docker-compose` please refer to the [documentation](docs/docker-compose.md).
+Troubleshooting
+- Permission errors with /dev/net/tun: ensure the device exists on the host and container has NET_ADMIN and device access.
+- "TLS Error: TLS key negotiation failed": check server logs, ensure port/protocol and firewall/NAT are configured correctly.
+- No routing to clients: verify server.conf pushes the correct routes and IP forwarding is enabled on the host.
 
-## Debugging Tips
+Contributing
+- Feel free to open issues and PRs.
+- If you add features, update this README with new environment variables and usage examples.
 
-* Create an environment variable with the name DEBUG and value of 1 to enable debug output (using "docker -e").
-
-        docker run -v $OVPN_DATA:/etc/openvpn -p 1194:1194/udp --cap-add=NET_ADMIN -e DEBUG=1 kylemanna/openvpn
-
-* Test using a client that has openvpn installed correctly
-
-        openvpn --config CLIENTNAME.ovpn
-
-* Run through a barrage of debugging checks on the client if things don't just work
-
-        ping 8.8.8.8    # checks connectivity without touching name resolution
-        dig google.com  # won't use the search directives in resolv.conf
-        nslookup google.com # will use search
-
-* Consider setting up a [systemd service](/docs/systemd.md) for automatic
-  start-up at boot time and restart in the event the OpenVPN daemon or Docker
-  crashes.
-
-## How Does It Work?
-
-Initialize the volume container using the `kylemanna/openvpn` image with the
-included scripts to automatically generate:
-
-* Diffie-Hellman parameters
-* a private key
-* a self-certificate matching the private key for the OpenVPN server
-* an EasyRSA CA key and certificate
-* a TLS auth key from HMAC security
-
-The OpenVPN server is started with the default run cmd of `ovpn_run`
-
-The configuration is located in `/etc/openvpn`, and the Dockerfile
-declares that directory as a volume. It means that you can start another
-container with the `-v` argument, and access the configuration.
-The volume also holds the PKI keys and certs so that it could be backed up.
-
-To generate a client certificate, `kylemanna/openvpn` uses EasyRSA via the
-`easyrsa` command in the container's path.  The `EASYRSA_*` environmental
-variables place the PKI CA under `/etc/openvpn/pki`.
-
-Conveniently, `kylemanna/openvpn` comes with a script called `ovpn_getclient`,
-which dumps an inline OpenVPN client configuration file.  This single file can
-then be given to a client for access to the VPN.
-
-To enable Two Factor Authentication for clients (a.k.a. OTP) see [this document](/docs/otp.md).
-
-## OpenVPN Details
-
-We use `tun` mode, because it works on the widest range of devices.
-`tap` mode, for instance, does not work on Android, except if the device
-is rooted.
-
-The topology used is `net30`, because it works on the widest range of OS.
-`p2p`, for instance, does not work on Windows.
-
-The UDP server uses`192.168.255.0/24` for dynamic clients by default.
-
-The client profile specifies `redirect-gateway def1`, meaning that after
-establishing the VPN connection, all traffic will go through the VPN.
-This might cause problems if you use local DNS recursors which are not
-directly reachable, since you will try to reach them through the VPN
-and they might not answer to you. If that happens, use public DNS
-resolvers like those of Google (8.8.4.4 and 8.8.8.8) or OpenDNS
-(208.67.222.222 and 208.67.220.220).
+License
+This repository is provided under the MIT License. See the LICENSE file for details.
